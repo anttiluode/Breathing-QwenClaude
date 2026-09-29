@@ -6,11 +6,7 @@ Breathing Qwen is a small inference-time experiment around frozen **Qwen3-8B**. 
 
 No training is performed and the model weights are unchanged. The repository compares several ways of searching the same frozen model under contradictory evidence, from ordinary one-shot generation to leave-one-clue-out search, iterative trust updates, attention steering, and a newer residue-driven search that preserves unexplained evidence instead of suppressing it.
 
-> **Current result:** the complicated parts did not win. On the first 60-item Qwen3-8B benchmark, strict accuracy on corrupted clues rose from **52% for one-shot generation to 75% for simple leave-one-clue-out search plus checking**. The iterative trust loop did not beat that control, and lowering clue influence inside attention did not beat deleting the clue from the prompt. A cleaner replacement-design run reached the same conclusion. Full receipts and caveats are in **[RESULTS.md](RESULTS.md)**.
-
-A third run tested `residue_search`, which was added after the first two. It was also killed by its own rule
-(−3 points against leave-one-out). It lost mainly because its stopping rule quit too early, but it was about
-three times cheaper and fixed a different set of items. See RESULTS.md, run 3.
+> **Current result:** the complicated parts did not win. On a 60-item Qwen3-8B benchmark, strict accuracy on corrupted clues rose from **52% for one-shot generation to 75% for simple leave-one-clue-out search plus checking**. Three more elaborate methods (an iterative trust loop, attention steering, and a residue-driven search) were each tested against that simple control under a rule stated before the run, and none beat it. Full receipts and caveats are in **[RESULTS.md](RESULTS.md)**.
 
 ## The problem
 
@@ -90,6 +86,27 @@ Swapping one true clue for one false clue cost plain Qwen **45 percentage points
 
 Run 2 is **not** an independent second sample of the corrupted items: it used the same corrupted prompts, slots, model, and seed. It mainly validates the cleaner base condition and shows that the result was not caused merely by adding a fourth clue.
 
+## Run 3: residue search
+
+Run 3 repeated the replacement design with one additional arm, `residue_search` (described below). The six earlier arms reproduced run 2 almost exactly.
+
+| arm | true fourth clue | false fourth clue, strict | generations per item | seconds per item |
+|---|---:|---:|---:|---:|
+| `dropout` | 0.97 | **0.75** | 30.5 | 11.0 |
+| `breathe_attn` | 0.98 | 0.75 | 33.1 | 7.7 |
+| `residue_search` | 0.97 | 0.72 | **12.9** | **3.8** |
+
+`residue_search` did not beat leave-one-out search (difference −0.033, paired 95% interval −0.133 to +0.050), so it fails its predeclared rule.
+
+The main cause was its stopping rule. It was allowed the same generation budget as the other search arms but used only about 40% of it, because it stopped as soon as its best answer stayed the same for two rounds. In 13 of the 60 corrupted items it stopped while its best answer still failed to explain one or more *true* clues — for example answering *Geoffrey Hinton* for a John Hopfield item and *Naloxone* for a placebo item.
+
+Two observations are worth keeping:
+
+- **It fails on different items than leave-one-out.** It fixed three items where leave-one-out produced near-misses (*Suzhou compass*, *Serendip*, *Autovaccine*), while losing others. Counting an item as solved if either method solved it gives 48 of 60, compared with 45 for leave-one-out alone. This is an upper bound, not a result, but it suggests testing a combination.
+- **It was about three times cheaper** per item than leave-one-out, for a three-point lower accuracy.
+
+The raw output is in `results/qwen3-8b-4bit_run3_residue.jsonl`.
+
 ## The original breathing loop
 
 The original mechanism maintained one trust value per clue.
@@ -130,11 +147,7 @@ Only after search settles can a still-unexplained clue be reported as a likely b
 
 Its predeclared rule is simple: `residue_search` survives only if it beats `dropout` on corrupted items with a paired 95% interval above zero while losing no more than 5 points on the base condition.
 
-**Run 3 result: killed.** `residue_search − dropout` = −0.033 strict [−0.133, +0.050]. It used only 12.9
-of its roughly 33-generation budget. In 13 of 60 corrupted items it stopped after two rounds while the best
-answer still left a true clue unexplained (Hopfield → "Geoffrey Hinton", placebo → "Naloxone"). Where it
-won (compass, serendipity, vaccine), it fixed dropout's near-miss answers. Its failures and dropout's barely
-overlap, which is the argument for testing a combination rather than either one alone.
+**Result:** it did not survive. See *Run 3* above. The tested version stopped searching too early. The idea of letting unexplained evidence drive further search, run with its full budget or combined with leave-one-out candidates, has not been tested yet.
 
 ## A note on the name
 
@@ -181,6 +194,14 @@ Strictly re-score a saved run:
 python analyze.py results/qwen3-8b-4bit_run1.jsonl
 ```
 
+Raw outputs of the published runs:
+
+| file | design | arms |
+|---|---|---|
+| `results/qwen3-8b-4bit_run1.jsonl` | insert | five arms |
+| `results/qwen3-8b-4bit_run2_replace.jsonl` | replace | five arms |
+| `results/qwen3-8b-4bit_run3_residue.jsonl` | replace | six arms, including `residue_search` |
+
 The optional Qwen3 thinking-mode control is available with `--think`, but it was not run in the published first two experiments.
 
 Qwen3-8B in bf16 requires substantially more VRAM than the 4-bit path. Smaller Qwen3 models can also be selected with `--model`, but no cross-size result is claimed in this repository yet.
@@ -224,13 +245,14 @@ Supported by the current runs:
 - leave-one-clue-out search recovers a substantial fraction of that loss;
 - the tested iterative trust loop does not beat the simpler leave-one-out control;
 - the tested attention-bias implementation does not beat text deletion;
-- the loop's “distrusted clue” flag is informative, although it has not yet been shown to require the loop.
+- the loop's “distrusted clue” flag is informative, although it has not yet been shown to require the loop;
+- the tested `residue_search` does not beat leave-one-out search, mainly because it stops too early.
 
 Not supported yet:
 
 - that rhythmic or oscillating attention temperature improves retrieval;
 - that `residue_search` beats leave-one-out search (run 3: it did not);
-- that combining leave-one-out candidates with residue-driven follow-up helps (untested);
+- that combining leave-one-out candidates with residue-driven follow-up helps (not yet tested);
 - that smaller models with extra search can replace larger models;
 - that the mechanism explains biological memory or cortical rhythms.
 
@@ -241,7 +263,7 @@ Not supported yet:
 - The checker is itself Qwen3-8B, so checker errors can affect search.
 - Some targets have defensible synonyms not covered by the answer key.
 - The first insert-design run changed clue count as well as clue truth; run 2 addresses this with the replacement design.
-- The first two corrupted-condition runs are not independent samples.
+- The three runs share the same corrupted prompts and seed, so they are not independent samples of the corrupted condition.
 - The historical preregistration sequence is documented in `RESULTS.md`; the repository was uploaded after some early interactive development, so GitHub timestamps alone do not establish the full ordering.
 
 ## Repository layout

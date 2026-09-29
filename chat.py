@@ -33,8 +33,17 @@ def note_for(result) -> str:
                      f"\"{cue}\" (trust {w:.2f}).")
         if kept:
             parts.append("The clues it relied on: " + "; ".join(f"\"{c}\"" for c in kept) + ".")
-    else:
-        parts.append("All the clues fitted together.")
+    # say plainly which clues the checker could NOT confirm for the chosen answer
+    # (the first real demo claimed "fits all your clues" while the septum clue scored 0.00)
+    fits = result.fit_table.get(result.answer)
+    if fits is not None:
+        unconfirmed = [c for i, c in enumerate(result.cues)
+                       if fits[i] < 0.5 and not (dis and i == dis[0])]
+        if unconfirmed:
+            parts.append("The check could NOT confirm these clues for that answer, so do not claim "
+                         "it fits them: " + "; ".join(f"\"{c}\"" for c in unconfirmed) + ".")
+        elif not dis:
+            parts.append("The other clues all checked out.")
     if not result.settled:
         parts.append("It did not fully settle, so hedge a little.")
     return " ".join(parts)

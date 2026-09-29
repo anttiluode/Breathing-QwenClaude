@@ -7,10 +7,12 @@ the clue that keeps disagreeing with the rest.
 No training. No change to the weights. The only new part is outside the model:
 one trust number per clue, fed back into Qwen's attention.
 
-> **Status: built and wired, not yet tested on Qwen3-8B.** Everything below was
-> checked on a tiny random Qwen3 and in a hand-built mock world (19 tests pass).
-> Whether it helps a real model is exactly what `bench.py` is for, and it can
-> come back negative.
+> **Status: run on Qwen3-8B, and the pre-registered test killed the loop.** Leaving each
+> clue out in turn and checking the answers against the clues lifts accuracy on corrupted
+> clues from 52% to 75%, with no cost on clean items. The iterative trust loop and the
+> attention precision added nothing beyond that. What the loop does add is a
+> well-calibrated flag: when it names a clue as the false one, it is right about nine
+> times in ten. Full numbers are in **[RESULTS.md](RESULTS.md)**.
 
 ## What it does
 
@@ -40,7 +42,7 @@ It stops when the answer has held for two breaths and no clue's trust is still
 moving. Then it answers in its own words. For comparison, plain Qwen answers the
 same message with no loop.
 
-## How it will talk
+## How it talks
 
 The chat prints each breath: what came up on the inhale, what it committed to,
 the belief over candidates, and a trust bar per clue. Then it gives a normal
@@ -49,9 +51,11 @@ the same attention precision still applied. When a clue was set aside, it is
 told to say so. The reply should sound like: *you said it starts with B, but
 everything else points to the striatum, so I set the B aside.*
 
-That is a design intent, not a recorded output; nothing here has run on Qwen3-8B
-yet. The trace format below is real output from the **mock world** in
-`tests/test_engine_mock.py`, where the "model" is a hand-written table:
+On the real striatum demo, Qwen3-8B found "Bilateral striatum". That is a blend: it kept
+the right noun and bolted on a B-word to satisfy the false clue, so no clue lost trust.
+The demo also prints the checker's fit table, so you can see exactly where each Yes and
+No came from. The trace below is from the **mock world** in `tests/test_engine_mock.py`,
+where the "model" is a hand-written table:
 
 ```
 ── breath 1 ────────────────────────────────────────────
@@ -123,7 +127,8 @@ share one frozen model:
 | `breathe_text` | the full loop, with trust applied by deleting low-trust clues |
 | `breathe_attn` | the full loop, with trust applied inside attention |
 
-**The rule, fixed before any run:**
+**The rule, written before any real run** (see RESULTS.md on what the history can and
+cannot show):
 
 - **Breathing survives** only if `breathe_attn` beats **both** `fixed` and
   `dropout` on corrupted items, with a paired 95% bootstrap interval above zero,
@@ -131,6 +136,19 @@ share one frozen model:
   Otherwise, the loop is decoration: sampling plus checking already does the work.
 - **Attention precision survives** only if `breathe_attn − breathe_text` is
   above zero under the same test. Otherwise, deleting the clue is just as good.
+
+**Run 1 result: both killed.** `breathe_attn − dropout` = −0.017 [−0.067, +0.033] on
+corrupted clues. Details are in [RESULTS.md](RESULTS.md).
+
+Options added after run 1:
+
+```bash
+python bench.py --load-4bit --design replace      # 3 true + TRUE 4th  vs  3 true + FALSE 4th
+python analyze.py results/qwen3-8b-4bit_run1.jsonl   # strict re-score: clean / blend / obeyed / other
+```
+
+bench.py now prints strict accuracy next to the lenient, pre-registered one. Strict means
+"Bilateral striatum" is no longer counted as striatum.
 
 The bench also reports how often the loop flagged the corrupted clue, and how
 often it flagged a clue on clean items (false alarms). A rough runtime guess is
@@ -175,7 +193,10 @@ that the combination has to beat each of its parts.
 breathe/engine.py        the loop, both control arms, trace printing (no torch)
 breathe/qwen_backend.py  trust_sdpa attention hook, Qwen3 generation, Yes/No fit checks
 chat.py                  interactive chat and --demo
-bench.py                 the kill test
+bench.py                 the kill test (--design insert | replace)
+analyze.py               strict re-scoring of a results file
+RESULTS.md               run 1: numbers, failures, verdict
+results/                 raw results from real runs
 data/tot_items.jsonl     60 items, true clues + one corrupted clue each
 tests/                   mechanics on a tiny random Qwen3, logic in a mock world, end-to-end wiring
 ```

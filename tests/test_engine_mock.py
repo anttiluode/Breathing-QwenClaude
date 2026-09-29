@@ -108,3 +108,26 @@ def test_clue_the_checker_rejects_everywhere_is_not_accused():
                   [0.1, 0.99, 0.99]])     # false letter clue
     _, belief, R = belief_and_residue(F, np.ones(3), beta=6.0)
     assert R[0] < 1e-9 and R[1] > 0 and R[2] > 0
+
+
+def test_strict_outcomes_separate_blends():
+    from analyze import outcome
+    item = {"target": "laplacian", "aliases": ["laplacian", "laplace operator"],
+            "corrupt": {"clue": "I think it starts with H"}}
+    assert outcome("Laplacian", item) == "clean"
+    assert outcome("the Laplace operator", item) == "clean"
+    assert outcome("Hodge Laplacian", item) == "blend"
+    assert outcome("Hessian", item) == "obeyed"
+    assert outcome("Gradient", item) == "other"
+
+
+def test_replace_design_keeps_structure():
+    import json, random
+    from bench import make_conditions
+    items = [json.loads(l) for l in open("data/tot_items.jsonl", encoding="utf-8")]
+    assert all(it.get("true_clue") for it in items)
+    c = make_conditions(items[0], random.Random(0), "replace")
+    (base, _), (cor, pos) = c["base"], c["corrupt"]
+    assert len(base) == len(cor) == 4
+    assert [x for k, x in enumerate(base) if k != pos] == [x for k, x in enumerate(cor) if k != pos]
+    assert base[pos] == items[0]["true_clue"] and cor[pos] == items[0]["corrupt"]["clue"]

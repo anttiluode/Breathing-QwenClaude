@@ -27,6 +27,7 @@ Pre-registered rule (README):
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import random
 import sys
@@ -34,6 +35,7 @@ import time
 
 import numpy as np
 
+from analyze import outcome
 from breathe.engine import BreathConfig, breathe, dropout_once, fixed_repeat, normalize
 
 
@@ -54,11 +56,19 @@ def is_correct(answer: str, aliases: list[str]) -> bool:
     return False
 
 
-def make_conditions(item, rng):
+def make_conditions(item, rng, design="insert"):
+    """insert : clean = 3 true clues;          corrupt = 3 true + the false clue
+       replace: base  = 3 true + a TRUE 4th;    corrupt = 3 true + the false 4th, same slot
+    'replace' keeps the clue count and structure identical, so only the corruption differs
+    (for letter items the true 4th is the correct first letter: can the loop keep a true
+    letter clue while rejecting a false one?)."""
     clean = list(item["clues"])
     pos = rng.randrange(len(clean) + 1)
     corrupt = clean[:pos] + [item["corrupt"]["clue"]] + clean[pos:]
-    return {"clean": (clean, None), "corrupt": (corrupt, pos)}
+    if design == "replace":
+        true4 = clean[:pos] + [item["true_clue"]] + clean[pos:]
+        return {"base": (true4, None), "corrupt": (corrupt, pos)}
+    return {"base": (clean, None), "corrupt": (corrupt, pos)}
 
 
 def paired_ci(a: np.ndarray, b: np.ndarray, n_boot: int = 10000, seed: int = 0):
@@ -85,6 +95,8 @@ def main():
     ap.add_argument("--gain", type=float, default=1.0, help="attention trust gain")
     ap.add_argument("--beats", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--design", choices=["insert", "replace"], default="insert",
+                    help="insert: clean=3 true clues (run 1); replace: base=3 true + a true 4th")
     ap.add_argument("--out", default="results.jsonl")
     args = ap.parse_args()
 
@@ -103,7 +115,7 @@ def main():
 
     with open(args.out, "w", encoding="utf-8") as out:
         for n_item, item in enumerate(items, 1):
-            conds = make_conditions(item, rng)
+            conds = make_conditions(item, rng, args.design)
             for cond, (cues, cpos) in conds.items():
                 res = {}
                 r = breathe(be, cues, BreathConfig(**{**cfg.__dict__, "use_attention": True}))
@@ -126,7 +138,9 @@ def main():
                 for arm in arms:
                     x = res[arm]
                     dis = x.distrusted
-                    row = {"id": item["id"], "target": item["target"], "condition": cond, "arm": arm,
+                    row = {"id": item["id"], "target": item["target"], "design": args.design,
+                           "condition": cond if cond == "corrupt" else ("clean" if args.design == "insert" else "true4"),
+                           "arm": arm, "outcome": outcome(x.answer, item),
                            "corrupt_type": item["corrupt"]["type"], "corrupt_pos": cpos,
                            "answer": x.answer, "correct": is_correct(x.answer, item["aliases"]),
                            "trust": x.trust, "distrusted": dis[0] if dis else None,
@@ -144,61 +158,70 @@ def main():
 
 
 def summarize(rows, arms):
-    print("\n=== accuracy (fraction correct, ± standard error) ===")
     ids = sorted({r["id"] for r in rows})
-    table = {}
-    for cond in ("clean", "corrupt"):
+    base = next(c for c in ("clean", "true4") if any(r["condition"] == c for r in rows))
+    get = {(r["id"], r["condition"], r["arm"]): r for r in rows}
+
+    def col(cond, arm, strict):
+        return np.array([(get[(i, cond, arm)]["outcome"] == "clean") if strict else get[(i, cond, arm)]["correct"]
+                         for i in ids], dtype=float)
+
+    for strict in (False, True):
+        name = "STRICT (answer must be the target, no blends)" if strict else "lenient, as pre-registered"
+        print(f"\n=== accuracy, {name} (± standard error) ===")
+        print(f"{'arm':<14}{base:>16}{'corrupt':>16}{'gens/item':>12}{'s/item':>9}")
         for arm in arms:
-            v = np.array([next(r["correct"] for r in rows if r["id"] == i and r["condition"] == cond
-                               and r["arm"] == arm) for i in ids], dtype=float)
-            table[(cond, arm)] = v
-    print(f"{'arm':<14}{'clean':>16}{'corrupt':>16}{'gens/item':>12}")
+            cells = []
+            for cond in (base, "corrupt"):
+                v = col(cond, arm, strict)
+                cells.append(f"{v.mean():.2f} ± {v.std(ddof=1) / np.sqrt(len(v)) if len(v) > 1 else 0:.2f}")
+            g = np.mean([get[(i, "corrupt", arm)]["generations"] for i in ids])
+            sec = np.mean([get[(i, "corrupt", arm)]["seconds"] for i in ids])
+            print(f"{arm:<14}{cells[0]:>16}{cells[1]:>16}{g:>12.1f}{sec:>9.1f}")
+
+    print("\n=== corrupted clue: what was answered (clean / blend / obeyed false letter / other) ===")
     for arm in arms:
-        g = np.mean([r["generations"] for r in rows if r["arm"] == arm and r["condition"] == "corrupt"])
-        cells = []
-        for cond in ("clean", "corrupt"):
-            v = table[(cond, arm)]
-            cells.append(f"{v.mean():.2f} ± {v.std(ddof=1) / np.sqrt(len(v)) if len(v) > 1 else 0:.2f}")
-        print(f"{arm:<14}{cells[0]:>16}{cells[1]:>16}{g:>12.1f}")
+        c = Counter(get[(i, "corrupt", arm)]["outcome"] for i in ids)
+        print(f"{arm:<14}{c['clean']:>4}{c['blend']:>6}{c['obeyed']:>6}{c['other']:>6}")
 
-    print("\n=== which clue did the loop distrust? (corrupt condition) ===")
+    print("\n=== the distrust flag (corrupt condition) ===")
     for arm in ("breathe_text", "breathe_attn"):
-        rs = [r for r in rows if r["arm"] == arm and r["condition"] == "corrupt"]
-        hit = np.mean([r["distrusted"] == r["corrupt_pos"] for r in rs])
-        none = np.mean([r["distrusted"] is None for r in rs])
-        fa = np.mean([r["distrusted"] is not None for r in rows if r["arm"] == arm and r["condition"] == "clean"])
-        print(f"{arm:<14} flagged the corrupted clue: {hit:.2f}   flagged nothing: {none:.2f}   "
-              f"false alarm on clean items: {fa:.2f}")
+        groups = {"named the false clue": [], "named nothing": [], "named a TRUE clue": []}
+        for i in ids:
+            r = get[(i, "corrupt", arm)]
+            key = ("named the false clue" if r["distrusted"] == r["corrupt_pos"]
+                   else "named nothing" if r["distrusted"] is None else "named a TRUE clue")
+            groups[key].append(r["outcome"] == "clean")
+        line = "   ".join(f"{k} {len(v)} (right {np.mean(v):.2f})" for k, v in groups.items() if v)
+        fa = np.mean([get[(i, base, arm)]["distrusted"] is not None for i in ids])
+        print(f"{arm:<14}{line}   false alarms on {base}: {fa:.2f}")
 
-    print("\n=== by corruption type (corrupt condition) ===")
-    types = sorted({r["corrupt_type"] for r in rows})
-    for t in types:
-        line = f"{t:<16}"
-        for arm in arms:
-            v = [r["correct"] for r in rows if r["arm"] == arm and r["condition"] == "corrupt" and r["corrupt_type"] == t]
-            line += f"  {arm}={np.mean(v):.2f}"
-        print(line + f"  (n={len(v)})")
+    print("\n=== by corruption type (corrupt, strict) ===")
+    for t in sorted({r["corrupt_type"] for r in rows}):
+        tid = [i for i in ids if get[(i, "corrupt", arms[0])]["corrupt_type"] == t]
+        line = f"{t:<16}" + "".join(
+            f"  {arm}={np.mean([get[(i, 'corrupt', arm)]['outcome'] == 'clean' for i in tid]):.2f}" for arm in arms)
+        print(line + f"  (n={len(tid)})")
 
-    print("\n=== pre-registered comparisons (paired bootstrap, 95%) ===")
-    A = table[("corrupt", "breathe_attn")]
-    verdicts = []
-    for other in ("fixed", "dropout", "breathe_text", "one_shot") + (("think",) if "think" in arms else ()):
-        m, lo, hi = paired_ci(A, table[("corrupt", other)])
-        print(f"corrupt: breathe_attn - {other:<12} {m:+.3f}  [{lo:+.3f}, {hi:+.3f}]")
-        verdicts.append((other, lo > 0))
-    m, lo, hi = paired_ci(table[("clean", "breathe_attn")], table[("clean", "one_shot")])
-    print(f"clean:   breathe_attn - one_shot     {m:+.3f}  [{lo:+.3f}, {hi:+.3f}]")
-    clean_ok = m >= -0.05
-    v = dict(verdicts)
-    print("\n=== verdict ===")
-    if v["fixed"] and v["dropout"] and clean_ok:
-        print("BREATHING SURVIVES: beats both compute-matched controls on corrupted clues.")
-    else:
-        why = [k for k in ("fixed", "dropout") if not v[k]]
-        print("BREATHING KILLED" + (f": does not beat {', '.join(why)}" if why else "") +
-              ("" if clean_ok else "; costs more than 5 points on clean items") + ".")
-    print("ATTENTION PRECISION " + ("SURVIVES (beats text deletion)." if v["breathe_text"]
-                                    else "NOT SHOWN: no better than deleting cues from the text."))
+    for strict in (False, True):
+        print(f"\n=== pre-registered comparisons, {'strict' if strict else 'lenient'} (paired bootstrap, 95%) ===")
+        A = col("corrupt", "breathe_attn", strict)
+        v = {}
+        for other in ("fixed", "dropout", "breathe_text", "one_shot") + (("think",) if "think" in arms else ()):
+            m, lo, hi = paired_ci(A, col("corrupt", other, strict))
+            print(f"corrupt: breathe_attn - {other:<12} {m:+.3f}  [{lo:+.3f}, {hi:+.3f}]")
+            v[other] = lo > 0
+        m, lo, hi = paired_ci(col(base, "breathe_attn", strict), col(base, "one_shot", strict))
+        print(f"{base + ':':<9}breathe_attn - one_shot     {m:+.3f}  [{lo:+.3f}, {hi:+.3f}]")
+        base_ok = m >= -0.05
+        if v["fixed"] and v["dropout"] and base_ok:
+            print("-> BREATHING SURVIVES: beats both compute-matched controls on corrupted clues.")
+        else:
+            why = [k for k in ("fixed", "dropout") if not v[k]]
+            print("-> BREATHING KILLED" + (f": does not beat {', '.join(why)}" if why else "") +
+                  ("" if base_ok else f"; costs more than 5 points on {base} items") + ".")
+        print("-> ATTENTION PRECISION " + ("SURVIVES (beats text deletion)." if v["breathe_text"]
+                                          else "NOT SHOWN: no better than deleting cues from the text."))
 
 
 if __name__ == "__main__":

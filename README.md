@@ -2,7 +2,11 @@
 
 A frozen Qwen3-8B wrapped in a loop that recalls the way you found *striatum*:
 hold everything you know, let go of one clue at a time, and slowly stop trusting
-the clue that keeps disagreeing with the rest.
+the clue that keeps disagreeing with the rest. (I remembered a part of brain that 
+deals with time starts with b. But that was false memory. I then asked ai's 
+which part of brain deals with time similar to m septum. They were not able to 
+give me the answer. (Claude, gemini, chatgpt). This tiny model was able to 
+remember it) 
 
 No training. No change to the weights. The only new part is outside the model:
 one trust number per clue, fed back into Qwen's attention.

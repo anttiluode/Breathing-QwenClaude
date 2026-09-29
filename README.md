@@ -8,7 +8,9 @@ No training is performed and the model weights are unchanged. The repository com
 
 > **Current result:** the complicated parts did not win. On the first 60-item Qwen3-8B benchmark, strict accuracy on corrupted clues rose from **52% for one-shot generation to 75% for simple leave-one-clue-out search plus checking**. The iterative trust loop did not beat that control, and lowering clue influence inside attention did not beat deleting the clue from the prompt. A cleaner replacement-design run reached the same conclusion. Full receipts and caveats are in **[RESULTS.md](RESULTS.md)**.
 
-A new arm, `residue_search`, is currently being tested. It was added after the first two runs and has no claimed result yet.
+A third run tested `residue_search`, which was added after the first two. It was also killed by its own rule
+(−3 points against leave-one-out). It lost mainly because its stopping rule quit too early, but it was about
+three times cheaper and fixed a different set of items. See RESULTS.md, run 3.
 
 ## The problem
 
@@ -128,7 +130,11 @@ Only after search settles can a still-unexplained clue be reported as a likely b
 
 Its predeclared rule is simple: `residue_search` survives only if it beats `dropout` on corrupted items with a paired 95% interval above zero while losing no more than 5 points on the base condition.
 
-**Status: current run in progress. No result claimed yet.**
+**Run 3 result: killed.** `residue_search − dropout` = −0.033 strict [−0.133, +0.050]. It used only 12.9
+of its roughly 33-generation budget. In 13 of 60 corrupted items it stopped after two rounds while the best
+answer still left a true clue unexplained (Hopfield → "Geoffrey Hinton", placebo → "Naloxone"). Where it
+won (compass, serendipity, vaccine), it fixed dropout's near-miss answers. Its failures and dropout's barely
+overlap, which is the argument for testing a combination rather than either one alone.
 
 ## A note on the name
 
@@ -223,7 +229,8 @@ Supported by the current runs:
 Not supported yet:
 
 - that rhythmic or oscillating attention temperature improves retrieval;
-- that `residue_search` beats leave-one-out search;
+- that `residue_search` beats leave-one-out search (run 3: it did not);
+- that combining leave-one-out candidates with residue-driven follow-up helps (untested);
 - that smaller models with extra search can replace larger models;
 - that the mechanism explains biological memory or cortical rhythms.
 

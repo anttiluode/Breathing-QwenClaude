@@ -155,7 +155,56 @@ The new information is the true-clue condition:
 The only true-clue miss that repeated across arms was "Ubiquity" for ubiquitous: the
 right root in the wrong word form. That's a scoring question more than a recall one.
 
-## Next: residue_search
+## Run 3: residue_search (replacement design, same prompts)
+
+The same command as run 2, with the seventh arm added. The raw output is in
+`results/qwen3-8b-4bit_run3_residue.jsonl`. The six older arms reproduce run 2 almost
+exactly, so the new information is residue_search.
+
+**Verdict: killed by its own rule.** `residue_search − dropout` on corrupted items was
+−0.033 strict [−0.133, +0.050]. On true-4th items it scored 0.97, the same as one_shot.
+
+| arm | true 4th | false 4th, strict | generations/item | s/item |
+|---|---|---|---|---|
+| dropout | 0.97 | **0.75** | 30.5 | 11.0 |
+| breathe_attn | 0.98 | 0.75 | 33.1 | 7.7 |
+| residue_search | 0.97 | 0.72 | **12.9** | **3.8** |
+
+**Why it lost: it stopped too early, not because the budget ran out.** It was allowed the
+same budget as the loop (about 33 generations) but used 12.9 on average. The stopping
+rule ended the search once the best answer had held for two rounds. In 13 of 60 corrupted
+items it stopped while the best answer still left a *true* clue unexplained. That includes
+all its clear losses:
+
+| item | residue_search | the true clues it left unexplained when it stopped |
+|---|---|---|
+| john hopfield | Geoffrey Hinton | "introduced an associative memory network in 1982", "shared the 2024 Nobel Prize in Physics" |
+| placebo | Naloxone | "an inert treatment…", "Latin for 'I shall please'" |
+| suprachiasmatic nucleus | Pineal gland | "the master body clock in the hypothalamus" |
+
+One residue round didn't produce a better candidate, the incumbent "held", and the search
+quit with half the evidence against it. Dropout wins these items because it simply asks
+once *without* the false clue.
+
+**Where it beat dropout:** compass ("Suzhou compass" → Compass), serendipity (Serendip →
+Serendipity) and vaccine (Autovaccine → Vaccination). These are dropout's blend and
+near-miss answers, fixed by keeping every clue in view. Its failures and dropout's barely
+overlap: getting an item right in *either* one covers 48/60, against 45 for dropout
+alone. That's an upper bound, not a result, but it points at the combination.
+
+**Its flag is sharper and noisier.** When it named the false clue, the answer was right
+0.94 of the time (35 items). But it flagged a clue on 17% of true-4th items, against 5–8%
+for the loop. It flags any clue with absolute fit < 0.5, so it inherits every checker
+slip: "D" for déjà vu, and a true clue for Amygdala. The answers in those cases were
+still right.
+
+**What this does and doesn't kill.** It kills this implementation, with this stopping
+rule. It doesn't test "residue drives the next search" at full budget, and it doesn't
+test the combination (dropout's candidates, then residue rounds only while a true-looking
+clue stays unexplained). Any v2 needs its own rule, written down before it runs. It also
+has to face the same dropout baseline, which is now run 1's known strong control.
+
+## Background: why residue_search was built
 
 Sol pointed out that Sihti's residue is what a purification step *removed*, kept intact.
 My loop's "residue" was a fit deficit used to *suppress* clues. Every loss to dropout above

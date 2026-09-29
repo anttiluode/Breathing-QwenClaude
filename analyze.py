@@ -70,15 +70,16 @@ def main(path, items_path="data/tot_items.jsonl"):
     rows = [json.loads(l) for l in open(path, encoding="utf-8")]
     items = {json.loads(l)["id"]: json.loads(l) for l in open(items_path, encoding="utf-8")}
     arms = [a for a in ARMS if any(r["arm"] == a for r in rows)]
+    base = next(c for c in ("clean", "true4") if any(r["condition"] == c for r in rows))
     ids = sorted({r["id"] for r in rows})
     get = {(r["id"], r["condition"], r["arm"]): r for r in rows}
 
     print(f"{len(ids)} items\n")
     print("=== corrupted clue: what each arm answered ===")
-    print(f"{'arm':<14}{'clean':>7}{'blend':>7}{'obeyed':>8}{'other':>7}   strict acc   clean-condition acc   s/item")
+    print(f"{'arm':<14}{'clean':>7}{'blend':>7}{'obeyed':>8}{'other':>7}   strict acc   {base}-condition acc   s/item")
     for arm in arms:
         c = Counter(outcome(get[(i, 'corrupt', arm)]["answer"], items[i]) for i in ids)
-        clean_cond = np.mean([outcome(get[(i, 'clean', arm)]["answer"], items[i]) in ("clean",) for i in ids])
+        clean_cond = np.mean([outcome(get[(i, base, arm)]["answer"], items[i]) in ("clean",) for i in ids])
         secs = np.mean([get[(i, 'corrupt', arm)]["seconds"] for i in ids])
         print(f"{arm:<14}{c['clean']:>7}{c['blend']:>7}{c['obeyed']:>8}{c['other']:>7}   "
               f"{c['clean'] / len(ids):10.2f}   {clean_cond:19.2f}   {secs:6.1f}")
@@ -113,8 +114,8 @@ def main(path, items_path="data/tot_items.jsonl"):
             v = groups.get(key, [])
             if v:
                 print(f"{arm:<14}{key:<22} n={len(v):>2}   answer correct {np.mean(v):.2f}")
-        fa = np.mean([get[(i, 'clean', arm)]["distrusted"] is not None for i in ids])
-        print(f"{arm:<14}false alarms on clean items: {fa:.2f}")
+        fa = np.mean([get[(i, base, arm)]["distrusted"] is not None for i in ids])
+        print(f"{arm:<14}false alarms on {base} items: {fa:.2f}")
 
 
 if __name__ == "__main__":

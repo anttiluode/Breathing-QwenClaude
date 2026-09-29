@@ -16,7 +16,9 @@ one trust number per clue, fed back into Qwen's attention.
 > clues from 52% to 75%, with no cost on clean items. The iterative trust loop and the
 > attention precision added nothing beyond that. What the loop does add is a
 > well-calibrated flag: when it names a clue as the false one, it is right about nine
-> times in ten. Full numbers are in **[RESULTS.md](RESULTS.md)**.
+> times in ten. A second run with a true 4th clue in place of the false one (same slot)
+> reached 97–100% for every arm, with the true letter clue kept. Full numbers are in
+> **[RESULTS.md](RESULTS.md)**.
 
 ## What it does
 

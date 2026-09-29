@@ -117,6 +117,44 @@ can amplify its first mistake, which a one-round method can't.
   rejecting a true clue for every candidate. The GitHub history can't show that order,
   because the repo was uploaded after the runs. The conversation it was built in can.
 
+## Run 2: the replacement design (same day)
+
+`python bench.py --load-4bit --design replace`. The raw output is in
+`results/qwen3-8b-4bit_run2_replace.jsonl`. The base condition is now **3 true clues plus a
+TRUE 4th clue in the same slot as the false one**. For letter items, that 4th clue is the
+correct first letter. The corrupt condition is unchanged.
+
+**Read this first: the corrupt condition is not a second sample.** It uses the same
+prompts, in the same slots, with the same seed as run 1. The arms agreed with run 1 on
+58–60 of the 60 corrupted items. So run 2 shows the model's nondeterminism is small, but
+it doesn't double the evidence. Don't pool the two runs as 120 items.
+
+The new information is the true-clue condition:
+
+| arm | 3 true + true 4th | 3 true + false 4th (strict) |
+|---|---|---|
+| one_shot | 0.97 | 0.52 |
+| fixed | 0.97 | 0.58 |
+| dropout | 0.98 | 0.75 |
+| breathe_text | 0.98 | 0.77 |
+| breathe_attn | **1.00** | 0.77 |
+
+- **Swapping one true clue for a false one costs plain Qwen 45 points** (0.97 → 0.52).
+  Leaving clues out recovers about half of that loss.
+- **A true letter clue is kept.** The loop flagged a clue on only 3–4 of the 60 true-clue
+  items, and every answer in those cases was still right. The true letter clue itself was
+  flagged twice (palindrome, and "D" for déjà vu, where the checker seems to trip on the
+  accent). So the fear that the loop would reject letter clues in general didn't come
+  true.
+- **The kill verdict is unchanged.** `breathe_attn − dropout` on corrupt items was +0.017
+  strict, with an interval of [−0.050, +0.083]. Breathing is still killed, and attention
+  precision is still not shown.
+- **The flag held up again.** When it named the false clue, the answer was right 0.93 of
+  the time (28 items). When it named a true clue, it was right 0.00 (4 items).
+
+The only true-clue miss that repeated across arms was "Ubiquity" for ubiquitous: the
+right root in the wrong word form. That's a scoring question more than a recall one.
+
 ## Next: residue_search
 
 Sol pointed out that Sihti's residue is what a purification step *removed*, kept intact.

@@ -1,225 +1,263 @@
 # Breathing Qwen
 
-A frozen Qwen3-8B wrapped in a loop that recalls the way you found *striatum*:
-hold everything you know, let go of one clue at a time, and slowly stop trusting
-the clue that keeps disagreeing with the rest. (I remembered a part of brain that 
-deals with time starts with b. But that was false memory. I then asked ai's 
-which part of brain deals with time similar to m septum. They were not able to 
-give me the answer. (Claude, gemini, chatgpt). This tiny model was able to 
-remember it) 
+**Can a frozen language model recover the right answer when one remembered cue is confidently wrong?**
 
-No training. No change to the weights. The only new part is outside the model:
-one trust number per clue, fed back into Qwen's attention.
+Breathing Qwen is a small inference-time experiment around frozen **Qwen3-8B**. It studies a common failure mode: several clues point toward the right concept, but one vivid false cue — often a wrong first letter — pulls generation toward a plausible but incorrect answer.
 
-> **Status: run on Qwen3-8B, and the pre-registered test killed the loop.** Leaving each
-> clue out in turn and checking the answers against the clues lifts accuracy on corrupted
-> clues from 52% to 75%, with no cost on clean items. The iterative trust loop and the
-> attention precision added nothing beyond that. What the loop does add is a
-> well-calibrated flag: when it names a clue as the false one, it is right about nine
-> times in ten. A second run with a true 4th clue in place of the false one (same slot)
-> reached 97–100% for every arm, with the true letter clue kept. Full numbers are in
-> **[RESULTS.md](RESULTS.md)**.
+No training is performed and the model weights are unchanged. The repository compares several ways of searching the same frozen model under contradictory evidence, from ordinary one-shot generation to leave-one-clue-out search, iterative trust updates, attention steering, and a newer residue-driven search that preserves unexplained evidence instead of suppressing it.
 
-## What it does
+> **Current result:** the complicated parts did not win. On the first 60-item Qwen3-8B benchmark, strict accuracy on corrupted clues rose from **52% for one-shot generation to 75% for simple leave-one-clue-out search plus checking**. The iterative trust loop did not beat that control, and lowering clue influence inside attention did not beat deleting the clue from the prompt. A cleaner replacement-design run reached the same conclusion. Full receipts and caveats are in **[RESULTS.md](RESULTS.md)**.
 
-You give it clues, separated by `;`:
+A new arm, `residue_search`, is currently being tested. It was added after the first two runs and has no claimed result yet.
 
-```
-the part of the brain that deals with time; it has to do with dopamine and habits;
-we talked about it together with the medial septum; I think it starts with b
+## The problem
+
+Consider a tip-of-the-tongue query such as:
+
+```text
+a brain structure involved in interval timing and habit learning;
+the main input nucleus of the basal ganglia;
+loses much of its dopamine input in Parkinson's disease;
+I think it starts with B
 ```
 
-It breathes over them several times. Each breath has two phases:
+The first three clues point to **striatum**. The last clue is false. In the benchmark, plain Qwen3-8B answered **Basal Ganglia** on this corrupted version while counterfactual search recovered **Striatum**.
 
-- **Inhale (let go).** For each clue in turn, it drops that one clue's authority
-  almost to zero and samples a few answers at high temperature. This shows what
-  the other clues point to when any single clue is set aside, so an answer
-  blocked by a wrong clue can surface.
-- **Exhale (commit).** It gives one greedy answer with every clue at its current
-  trust.
+The motivating question is not whether the model knows the fact in its parameters. It often does. The question is whether a single contradictory cue can block access to that knowledge under one conditioning state, and whether nearby counterfactual queries can recover it.
 
-After each breath it checks every answer against every clue: it asks Qwen
-"is this clue true of this answer?" and reads the Yes/No probabilities. The part
-of a clue that an answer fails to explain is that clue's **residue**. The answer
-with the least trusted residue wins. A clue that keeps leaving residue under the
-winning answer loses trust. It is never deleted, and it can win trust back.
+## What survived
 
-It stops when the answer has held for two breaths and no clue's trust is still
-moving. Then it answers in its own words. For comparison, plain Qwen answers the
-same message with no loop.
+The strongest result so far is also the simplest:
 
-## How it talks
+1. Ask the model with all clues.
+2. Ask again with clue 1 left out.
+3. Ask again with clue 2 left out.
+4. Continue for each clue.
+5. Check the resulting candidates against the clues.
+6. Prefer the candidate that leaves the least unexplained evidence.
 
-The chat prints each breath: what came up on the inhale, what it committed to,
-the belief over candidates, and a trust bar per clue. Then it gives a normal
-reply. The settled result is passed to Qwen as a note, and Qwen phrases it with
-the same attention precision still applied. When a clue was set aside, it is
-told to say so. The reply should sound like: *you said it starts with B, but
-everything else points to the striatum, so I set the B aside.*
+This `dropout` / leave-one-clue-out control substantially reduced the model's tendency to obey a false first-letter cue.
 
-On the real striatum demo, Qwen3-8B found "Bilateral striatum". That is a blend: it kept
-the right noun and bolted on a B-word to satisfy the false clue, so no clue lost trust.
-The demo also prints the checker's fit table, so you can see exactly where each Yes and
-No came from. The trace below is from the **mock world** in `tests/test_engine_mock.py`,
-where the "model" is a hand-written table:
+### Run 1: insert design
 
-```
-── breath 1 ────────────────────────────────────────────
-  inhale (letting go of one clue at a time): biorhythm · striatum · brainstem · brodmann area
-  exhale: basal ganglia
-  belief:
-    ███████████· 0.94  striatum
-    █··········· 0.06  basal ganglia
-  trust in each clue:
-    ███████████· 0.95  involved in interval timing               residue 0.15
-    ███████████· 0.88  main input nucleus of the basal ganglia   residue 0.23
-    ████████████ 1.00  rich in dopamine receptors                residue 0.09
-    ███████····· 0.61  I think it starts with B                  residue 0.75
-...
-── breath 5 ────────────────────────────────────────────
-  exhale: striatum
-    ████████████ 1.00  striatum
-    ██·········· 0.15  I think it starts with B                  residue 0.99
+Run 1 used 60 items. The clean condition had three true clues. The corrupt condition added one false clue.
+
+| arm | clean | corrupt, strict |
+|---|---:|---:|
+| `one_shot` | 0.95 | 0.52 |
+| `fixed` — sample + check | 0.95 | 0.60 |
+| `dropout` — leave one clue out + check | 0.93 | **0.75** |
+| `breathe_text` — iterative trust via text deletion | 0.93 | 0.77 |
+| `breathe_attn` — iterative trust via attention bias | 0.95 | 0.75 |
+
+The predeclared rule required `breathe_attn` to beat both compute-matched controls. It did not. The trust loop was therefore **killed by its own criterion**. Attention precision was also not shown: attenuating a clue inside attention did no better than deleting it from the prompt.
+
+The dominant one-shot failure was simple obedience to the false cue. On 25 of 60 corrupted items, one-shot Qwen answered with a word beginning with the false letter. Leave-one-out search reduced that to 9–13 cases depending on the arm.
+
+See **[RESULTS.md](RESULTS.md)** for paired intervals, per-item outcomes, raw-result paths, and failure analysis.
+
+## Run 2: replacement design
+
+Run 1 changed both clue truth and clue count. Run 2 fixed that confound.
+
+The base condition became:
+
+```text
+3 true clues + 1 true fourth clue
 ```
 
-## Run it
+and the corrupt condition became:
+
+```text
+the same 3 true clues + 1 false fourth clue in the same slot
+```
+
+For wrong-letter items, the true fourth clue is the correct first letter. This tests whether the methods merely learn to distrust letter clues in general.
+
+Results:
+
+| arm | true fourth clue | false fourth clue, strict |
+|---|---:|---:|
+| `one_shot` | 0.97 | 0.52 |
+| `fixed` | 0.97 | 0.58 |
+| `dropout` | 0.98 | 0.75 |
+| `breathe_text` | 0.98 | 0.77 |
+| `breathe_attn` | **1.00** | 0.77 |
+
+Swapping one true clue for one false clue cost plain Qwen **45 percentage points**. Leave-one-out search recovered roughly half of that loss. The trust loop still did not beat the simpler control, and true letter clues were generally retained.
+
+Run 2 is **not** an independent second sample of the corrupted items: it used the same corrupted prompts, slots, model, and seed. It mainly validates the cleaner base condition and shows that the result was not caused merely by adding a fourth clue.
+
+## The original breathing loop
+
+The original mechanism maintained one trust value per clue.
+
+Each cycle had two stages:
+
+- **Open / inhale:** temporarily reduce one clue's authority and sample alternative answers.
+- **Commit / exhale:** generate a greedy answer under the current clue trusts.
+
+Every candidate was then checked against every clue with a Yes/No compatibility query. A clue that disagreed with the current candidate pool accumulated residue and lost trust through a robust Cauchy-style update.
+
+In attention mode, clue trust is injected into Qwen's attention logits as
+
+```text
+gain * log(trust_j)
+```
+
+for tokens belonging to clue `j`. A clue with trust 1 is unchanged; lower trust reduces its influence without changing model weights or prompt text.
+
+This mechanism worked mechanically, but the benchmark showed that its iterative trust update did not improve accuracy over one-round leave-one-out search. In its clearest failures, the loop distrusted a **true** clue first and then amplified its own mistake.
+
+That negative result is kept rather than tuned away.
+
+## Residue search: unexplained is not the same as wrong
+
+The first two runs exposed a conceptual problem in the trust loop:
+
+> A clue that the current hypothesis fails to explain is not necessarily a false clue.
+
+`residue_search` is a post-run-1 experiment built around that distinction. It never lowers clue trust. Instead:
+
+1. Generate candidate answers while keeping all clues available.
+2. Identify which clues the current best answer leaves unexplained.
+3. Feed those unexplained clues back into the next search as explicit pressure for a better candidate.
+4. Preserve the residue instead of suppressing the evidence that produced it.
+
+Only after search settles can a still-unexplained clue be reported as a likely bad cue.
+
+Its predeclared rule is simple: `residue_search` survives only if it beats `dropout` on corrupted items with a paired 95% interval above zero while losing no more than 5 points on the base condition.
+
+**Status: current run in progress. No result claimed yet.**
+
+## A note on the name
+
+The repository began from an intuition about alternating broad search and sharp commitment — a system that “breathes” rather than making one irreversible retrieval decision.
+
+The current benchmark does **not** test a globally oscillating attention temperature. The belief sharpness parameter is fixed, while the implemented loop varies generation sampling and clue authority. The name remains as project history; the stronger temperature-breathing hypothesis is still untested here.
+
+## Reproduce the experiments
+
+Install dependencies:
 
 ```bash
-pip install -r requirements.txt        # plus bitsandbytes for --load-4bit
-python chat.py --demo                  # the striatum morning, once
-python chat.py                         # talk to it
-python bench.py                        # the kill test (see below)
+pip install -r requirements.txt
 ```
 
-Qwen3-8B in bf16 needs about 17 GB of VRAM. On a 12 GB card, use `--load-4bit`.
-`--model Qwen/Qwen3-4B` or `Qwen/Qwen3-1.7B` work too, and the small-model
-question ("can a smaller model that breathes reach what a bigger one gets in one
-shot?") is a good second run.
+For a 4-bit Qwen3-8B run, install `bitsandbytes` as well:
 
-Chat commands: `/trace` (show or hide the breaths), `/plain` (show or hide plain
-Qwen), `/gain X` (attention trust gain; 0 switches to text mode), `/quit`.
+```bash
+python -m pip install -U bitsandbytes
+```
 
-## How trust reaches the model
+Interactive demo:
 
-`breathe/qwen_backend.py` registers an attention function, `trust_sdpa`. It adds
+```bash
+python chat.py --demo --load-4bit
+python chat.py --load-4bit
+```
 
-    gain × log(trust_j)
+Original insert-design benchmark:
 
-to the attention logits of every token belonging to clue *j*, in every layer and
-head. A clue at trust 1 is untouched. A clue at trust 0.1 is attended to roughly
-10× less. The prompt and the weights stay exactly the same. With no trust set,
-the function hands straight back to stock SDPA: `tests/test_mechanics.py` checks
-that the output is bit-identical to the unmodified model in that case. It also
-checks that a very large negative bias equals masking those tokens, and that
-cached decoding matches a full forward pass under bias.
+```bash
+python bench.py --load-4bit
+```
 
-All the "let go of clue k" settings share the same prompt tokens and differ only
-in their per-row bias, so one inhale is a single batched call.
+Cleaner replacement design:
 
-## The kill test
+```bash
+python bench.py --load-4bit --design replace --out results_replace.jsonl
+```
 
-`bench.py` runs 60 tip-of-the-tongue items (`data/tot_items.jsonl`). Each item
-has three true clues and one corrupted clue: 49 wrong first letters, 9 false
-details and 2 wrong categories. Every item runs twice, **clean** (true clues
-only) and **corrupt** (the bad clue inserted at a random position). Six arms
-share one frozen model:
+Strictly re-score a saved run:
 
-| arm | what it is |
+```bash
+python analyze.py results/qwen3-8b-4bit_run1.jsonl
+```
+
+The optional Qwen3 thinking-mode control is available with `--think`, but it was not run in the published first two experiments.
+
+Qwen3-8B in bf16 requires substantially more VRAM than the 4-bit path. Smaller Qwen3 models can also be selected with `--model`, but no cross-size result is claimed in this repository yet.
+
+## Experimental arms
+
+| arm | purpose |
 |---|---|
-| `one_shot` | greedy answer |
-| `think` | Qwen3 thinking mode, 768-token budget (`--think`, slow) |
-| `fixed` | self-consistency: same number of samples as `breathe_attn`, same residue-based selection, every clue always at full trust |
-| `dropout` | leave-one-clue-out sampling by deleting clues from the text, same selection, compute-matched, no trust loop |
-| `breathe_text` | the full loop, with trust applied by deleting low-trust clues |
-| `breathe_attn` | the full loop, with trust applied inside attention |
-| `residue_search` | added after run 1 (Sol's Sihti-style idea): no clue ever loses trust; the clues the current best answer leaves unexplained are shown back to the model to drive the next search; compute-matched |
+| `one_shot` | ordinary greedy answer |
+| `fixed` | repeated sampling + the same candidate checker, with all clues always active |
+| `dropout` | leave each clue out in turn, then check/select candidates |
+| `breathe_text` | iterative trust loop; low-trust clues are removed from the text |
+| `breathe_attn` | iterative trust loop; low trust becomes an attention-logit bias |
+| `residue_search` | preserve all clues; use currently unexplained clues to drive the next search |
+| `think` | optional Qwen3 thinking-mode baseline |
 
-**The rule, written before any real run** (see RESULTS.md on what the history can and
-cannot show):
+The controls are important. The project is specifically designed to distinguish a complicated iterative mechanism from simpler sampling, leave-one-out search, and verification.
 
-- **Breathing survives** only if `breathe_attn` beats **both** `fixed` and
-  `dropout` on corrupted items, with a paired 95% bootstrap interval above zero,
-  and costs no more than 5 points against `one_shot` on clean items.
-  Otherwise, the loop is decoration: sampling plus checking already does the work.
-- **Attention precision survives** only if `breathe_attn − breathe_text` is
-  above zero under the same test. Otherwise, deleting the clue is just as good.
+## Motivation
 
-**Run 1 result: both killed.** `breathe_attn − dropout` = −0.017 [−0.067, +0.033] on
-corrupted clues. Details are in [RESULTS.md](RESULTS.md).
+The project was motivated by a real tip-of-the-tongue failure: most semantic details of a concept were available, but one remembered first-letter cue was wrong. That kind of query is useful experimentally because the model may already contain the target knowledge while the false cue changes which part of that knowledge becomes accessible.
 
-Options added after run 1:
+The project therefore focuses on **retrieval under contradictory evidence**, not general question answering.
+
+## Related ideas and claim boundary
+
+Several ingredients are established techniques rather than new inventions:
+
+- Robust reweighting such as Huber/Cauchy-style IRLS is longstanding.
+- Self-consistency and sample-and-select methods are established inference techniques.
+- Leave-one-feature / leave-one-cue-out analysis is a standard robustness idea.
+- Attention steering on selected spans has prior work, including methods such as PASTA.
+- Candidate verification with a language model is common.
+- Tip-of-the-tongue blocking, spreading activation, and resonance/reset ideas have long histories in cognitive science.
+
+What this repository contributes is a controlled comparison of these ingredients on a deliberately corrupted-cue retrieval task, together with negative results that rule out some initially attractive mechanisms.
+
+Supported by the current runs:
+
+- one false clue can sharply reduce one-shot retrieval accuracy on this benchmark;
+- leave-one-clue-out search recovers a substantial fraction of that loss;
+- the tested iterative trust loop does not beat the simpler leave-one-out control;
+- the tested attention-bias implementation does not beat text deletion;
+- the loop's “distrusted clue” flag is informative, although it has not yet been shown to require the loop.
+
+Not supported yet:
+
+- that rhythmic or oscillating attention temperature improves retrieval;
+- that `residue_search` beats leave-one-out search;
+- that smaller models with extra search can replace larger models;
+- that the mechanism explains biological memory or cortical rhythms.
+
+## Known limitations
+
+- The benchmark is small: one model, one main seed, 60 items.
+- Most corruptions are wrong first-letter cues; false-detail and wrong-category cases are fewer.
+- The checker is itself Qwen3-8B, so checker errors can affect search.
+- Some targets have defensible synonyms not covered by the answer key.
+- The first insert-design run changed clue count as well as clue truth; run 2 addresses this with the replacement design.
+- The first two corrupted-condition runs are not independent samples.
+- The historical preregistration sequence is documented in `RESULTS.md`; the repository was uploaded after some early interactive development, so GitHub timestamps alone do not establish the full ordering.
+
+## Repository layout
+
+```text
+breathe/engine.py        retrieval loops, controls and trace logic
+breathe/qwen_backend.py  Qwen3 generation, attention bias and clue compatibility checks
+chat.py                  interactive demo
+bench.py                 benchmark runner (--design insert | replace)
+analyze.py               strict re-scoring and failure analysis
+RESULTS.md               detailed experimental record and verdicts
+results/                 raw outputs from real runs
+data/tot_items.jsonl     60 benchmark items and corrupted/true fourth clues
+tests/                   mechanics, mock-world logic and end-to-end wiring
+```
+
+CPU tests:
 
 ```bash
-python bench.py --load-4bit --design replace      # 3 true + TRUE 4th  vs  3 true + FALSE 4th
-python analyze.py results/qwen3-8b-4bit_run1.jsonl   # strict re-score: clean / blend / obeyed / other
+pip install pytest tokenizers
+python -m pytest -q tests
 ```
 
-**`residue_search` and its rule.** Run 1 lost to dropout wherever the trust loop decided
-a *true* clue didn't fit its current guess and stopped listening to it (insulin →
-Glucose). The lesson: *unexplained is not the same as wrong*. So `residue_search` never
-lowers a clue's weight. Each round it takes the best answer, lists the clues that answer
-leaves unexplained, and asks again with "this guess does not explain: …" added to the
-full clue list. It stops when nothing is left unexplained or the best answer holds. Only
-then is the clue still left over reported as the likely false one: after the answer, not
-before.
+## License
 
-Rule, written before its first run: it survives only if `residue_search − dropout` on
-corrupted clues has a paired 95% interval above zero, and it costs no more than 5 points
-on base items. bench.py prints this verdict too.
-
-bench.py now prints strict accuracy next to the lenient, pre-registered one. Strict means
-"Bilateral striatum" is no longer counted as striatum.
-
-The bench also reports how often the loop flagged the corrupted clue, and how
-often it flagged a clue on clean items (false alarms). A rough runtime guess is
-under an hour on a 24 GB GPU without `--think`. That is not measured.
-
-## What is not new
-
-Please say this before anyone else does:
-
-- **Iteratively reweighted least squares** and robust weights (Cauchy/Huber)
-  are decades old; the trust update is one of them.
-- **Self-consistency** (sample many, pick the consistent answer; Wang et al.
-  2022) is the `fixed` arm.
-- **Attention steering on chosen spans** already exists: PASTA (Zhang et al.
-  2023, "Tell Your Model Where to Attend") re-weights attention on
-  user-specified text. What differs here is only that the weights are set by
-  residue, in a loop.
-- Leave-one-cue-out prompting and answer verification are both common.
-- The cognitive picture (tip-of-the-tongue blockers, incubation, spreading
-  activation, Grossberg's resonance and reset) is established psychology.
-
-What this repo adds is the specific combination: residue-driven trust fed back
-into attention, cycled with a let-go/commit rhythm, and a kill test designed so
-that the combination has to beat each of its parts.
-
-## Known limits
-
-- It is built for answers that are a short name or term, not open conversation.
-- Qwen checks each clue with a Yes/No. Clues it cannot verify (for example "we
-  talked about it together") will leave residue and lose trust even when true.
-- Two clues that contradict each other can accuse each other. The loop then
-  relies on the remaining clues to break the tie, and with only three clues
-  that tie-break can be weak.
-- Residue is bounded (at most 1 per clue) on purpose. Summing log-probabilities
-  would let one flatly violated false clue outvote every true one
-  (`test_log_scoring_lets_one_cue_veto`). The price is that a true and very
-  specific clue gets no more than one vote either.
-
-## Files
-
-```
-breathe/engine.py        the loop, both control arms, trace printing (no torch)
-breathe/qwen_backend.py  trust_sdpa attention hook, Qwen3 generation, Yes/No fit checks
-chat.py                  interactive chat and --demo
-bench.py                 the kill test (--design insert | replace)
-analyze.py               strict re-scoring of a results file
-RESULTS.md               run 1: numbers, failures, verdict
-results/                 raw results from real runs
-data/tot_items.jsonl     60 items, true clues + one corrupted clue each
-tests/                   mechanics on a tiny random Qwen3, logic in a mock world, end-to-end wiring
-```
-
-Tests: `pip install pytest tokenizers && python -m pytest -q tests` (CPU, about
-10 seconds, no downloads).
+MIT

@@ -130,6 +130,7 @@ share one frozen model:
 | `dropout` | leave-one-clue-out sampling by deleting clues from the text, same selection, compute-matched, no trust loop |
 | `breathe_text` | the full loop, with trust applied by deleting low-trust clues |
 | `breathe_attn` | the full loop, with trust applied inside attention |
+| `residue_search` | added after run 1 (Sol's Sihti-style idea): no clue ever loses trust; the clues the current best answer leaves unexplained are shown back to the model to drive the next search; compute-matched |
 
 **The rule, written before any real run** (see RESULTS.md on what the history can and
 cannot show):
@@ -150,6 +151,19 @@ Options added after run 1:
 python bench.py --load-4bit --design replace      # 3 true + TRUE 4th  vs  3 true + FALSE 4th
 python analyze.py results/qwen3-8b-4bit_run1.jsonl   # strict re-score: clean / blend / obeyed / other
 ```
+
+**`residue_search` and its rule.** Run 1 lost to dropout wherever the trust loop decided
+a *true* clue didn't fit its current guess and stopped listening to it (insulin →
+Glucose). The lesson: *unexplained is not the same as wrong*. So `residue_search` never
+lowers a clue's weight. Each round it takes the best answer, lists the clues that answer
+leaves unexplained, and asks again with "this guess does not explain: …" added to the
+full clue list. It stops when nothing is left unexplained or the best answer holds. Only
+then is the clue still left over reported as the likely false one: after the answer, not
+before.
+
+Rule, written before its first run: it survives only if `residue_search − dropout` on
+corrupted clues has a paired 95% interval above zero, and it costs no more than 5 points
+on base items. bench.py prints this verdict too.
 
 bench.py now prints strict accuracy next to the lenient, pre-registered one. Strict means
 "Bilateral striatum" is no longer counted as striatum.

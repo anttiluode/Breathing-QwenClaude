@@ -131,3 +131,32 @@ def test_replace_design_keeps_structure():
     assert len(base) == len(cor) == 4
     assert [x for k, x in enumerate(base) if k != pos] == [x for k, x in enumerate(cor) if k != pos]
     assert base[pos] == items[0]["true_clue"] and cor[pos] == items[0]["corrupt"]["clue"]
+
+
+class ResidueWorld(MockWorld):
+    """First guesses are B-words; asked what explains the leftover clues, it offers the
+    candidates that fit those clues best."""
+
+    def propose_residue(self, cues, guess, unexplained, tried, n, temperature):
+        idx = [CUES.index(u) for u in unexplained]
+        ranked = sorted(self.table, key=lambda c: -sum(self.table[c][i] for i in idx))
+        fresh = [c for c in ranked if c not in {normalize(t) for t in tried}]
+        return [fresh[k % 2] for k in range(n)]
+
+
+def test_residue_search_keeps_every_clue_and_reports_the_leftover():
+    from breathe.engine import residue_search
+    r = residue_search(ResidueWorld(seed=0, base=0.0), CUES, n_total=30)
+    assert normalize(r.answer) == "striatum"
+    assert r.trust == [1.0] * 4                      # nothing was ever suppressed
+    assert r.distrusted is not None and r.distrusted[0] == 3   # the B-clue is what is left over
+    assert r.trail[0][0].lower() != "striatum"       # it did not start there
+
+
+def test_residue_search_stops_when_everything_is_explained():
+    from breathe.engine import residue_search
+    table = dict(TABLE)
+    table["basal ganglia"] = (0.8, 0.9, 0.9, 0.99)
+    r = residue_search(ResidueWorld(seed=1, table=table, base=0.0), CUES, n_total=30)
+    assert normalize(r.answer) == "basal ganglia" and r.distrusted is None
+    assert r.generations < 30

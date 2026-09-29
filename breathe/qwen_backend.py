@@ -267,6 +267,21 @@ class QwenBackend:
         answers = [clean_answer(self._decode(g)) for g in gens]
         return [answers[i * n_each:(i + 1) * n_each] for i in range(len(trusts))]
 
+    def propose_residue(self, cues, guess: str, unexplained: list[str], tried: list[str],
+                        n: int = 1, temperature: float = 1.0) -> list[str]:
+        """Search driven by what the current best guess leaves unexplained.  Every clue stays
+        in the prompt at full weight; the residue is added, never subtracted."""
+        user = (HEADER_RECALL + "\n" + "\n".join(f"- {c}" for c in cues) +
+                f"\n\n\"{guess}\" came to mind, but it does not explain:\n" +
+                "\n".join(f"- {c}" for c in unexplained) +
+                "\nAlready considered: " + ", ".join(tried) + "." +
+                "\nWhat else could it be? Name the thing that explains the most of what I remember.")
+        text = self._chat(SYSTEM_RECALL, user)
+        ids = self.tok(text, return_tensors="pt", add_special_tokens=False)["input_ids"].to(self.device)
+        with precision(None):
+            gens = self._generate(ids, n, temperature, self.max_new_tokens)
+        return [clean_answer(self._decode(g)) for g in gens]
+
     @torch.no_grad()
     def compat(self, cues: list[str], candidates: list[str]) -> np.ndarray:
         """fit[j, c] = P(Yes) / (P(Yes) + P(No)) for 'is clue j true of candidate c?'"""

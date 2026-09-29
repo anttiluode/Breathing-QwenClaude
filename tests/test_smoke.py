@@ -34,6 +34,9 @@ def test_all_arms_run():
     assert f.generations == 5 and d.generations == 7
     assert isinstance(be.one_shot(CUES), str)
     assert isinstance(be.think(CUES, budget=6), str)
+    from breathe.engine import residue_search
+    rs = residue_search(be, CUES, n_total=12)
+    assert rs.trust == [1.0] * 3 and rs.generations <= 12 and len(rs.leftover) == 3
     assert qb.TRUST.bias is None
 
 
@@ -64,8 +67,9 @@ def test_bench_main_runs(tmp_path, monkeypatch):
                                       "--beats", "2", "--think", "--think-budget", "4"])
     bench.main()
     rows = [json.loads(l) for l in out.read_text(encoding="utf-8").splitlines()]
-    assert len(rows) == 2 * 2 * 6       # items x conditions x arms
-    assert {r["arm"] for r in rows} == {"one_shot", "think", "fixed", "dropout", "breathe_text", "breathe_attn"}
+    assert len(rows) == 2 * 2 * 7       # items x conditions x arms
+    assert {r["arm"] for r in rows} == {"one_shot", "think", "fixed", "dropout", "breathe_text",
+                                        "breathe_attn", "residue_search"}
 
 
 def test_is_correct():

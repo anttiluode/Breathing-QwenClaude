@@ -128,10 +128,16 @@ class BreathResult:
     generations: int = 0
     fit_queries: int = 0
     fit_table: dict = field(default_factory=dict)   # candidate -> fit per clue (last pool)
+    leftover: list = field(default_factory=list)    # residue_search: 1 - fit of the final answer, per clue
+    trail: list = field(default_factory=list)       # residue_search: (best guess, unexplained clues) per round
 
     @property
     def distrusted(self) -> tuple[int, str, float] | None:
-        """Most-distrusted cue, if any cue lost meaningful trust."""
+        """Most-distrusted cue, if any cue lost meaningful trust.  For residue_search (trust is
+        never lowered) this is the clue the final answer leaves most unexplained, if any."""
+        if self.leftover:
+            j = int(np.argmax(self.leftover))
+            return (j, self.cues[j], 1.0 - self.leftover[j]) if self.leftover[j] > 0.5 else None
         if not self.trust:
             return None
         j = int(np.argmin(self.trust))
@@ -330,6 +336,63 @@ def dropout_once(backend, cues, per_drop: int = 2, temperature: float = 1.0, bet
     ans, p, q = _select(backend, cues, samples, beta)
     return BreathResult(answer=ans, belief=p, cues=list(cues), trust=[1.0] * len(cues),
                         seconds=time.time() - t0, generations=len(samples), fit_queries=q)
+
+
+def residue_search(backend, cues, n_total: int, per_round: int = 6, temperature: float = 1.0,
+                   beta: float = 6.0, unexplained_below: float = 0.5, stall: int = 2) -> BreathResult:
+    """Sol's Sihti-style alternative to the trust loop: unexplained is not the same as wrong.
+
+    No clue ever loses authority.  Each round:
+        best      the candidate that leaves the least residue with every clue at full weight
+        leftover  the clues the best candidate does NOT explain (fit < unexplained_below)
+        search    ask again, showing the model the full clue list PLUS "this guess leaves these
+                  unexplained" and the guesses already tried.  The residue drives the next
+                  search instead of being suppressed.
+    Stops when the best candidate explains every clue, when it has held for `stall` rounds
+    (whatever is still unexplained is then reported as the probably-false clue, AFTER the
+    answer is chosen, not before), or when the generation budget `n_total` is spent.
+    A false clue stays in the residue for the whole search; it just stops being able to win."""
+    t0 = time.time()
+    J = len(cues)
+    fits = _FitCache(backend, cues)
+    pool: dict[str, str] = {}
+
+    def add(answers):
+        for a in answers:
+            k = normalize(a)
+            if k and k not in pool:
+                pool[k] = a.strip()
+
+    first = min(per_round, max(1, n_total - 1))
+    add(backend.propose(cues, None, n=first, temperature=temperature))
+    add(backend.propose(cues, None, n=1, temperature=0.0))
+    gens = first + 1
+    trail, tried, held, last = [], [], 0, None
+    while True:
+        keys = list(pool)
+        F = fits.matrix(keys)
+        _, belief, _ = belief_and_residue(F, np.ones(J), beta)
+        b = int(np.argmax(belief))
+        best = keys[b]
+        unexplained = [j for j in range(J) if F[j, b] < unexplained_below]
+        trail.append((pool[best], [cues[j] for j in unexplained]))
+        held = held + 1 if best == last else 1
+        last = best
+        if pool[best] not in tried:
+            tried.append(pool[best])
+        if not unexplained or held >= stall or gens >= n_total:
+            break
+        n = min(per_round, n_total - gens)
+        add(backend.propose_residue(cues, pool[best], [cues[j] for j in unexplained], tried,
+                                    n=n, temperature=temperature))
+        gens += n
+
+    fb = F[:, b]
+    return BreathResult(answer=pool[best], belief=float(belief[b]), cues=list(cues), trust=[1.0] * J,
+                        settled=not unexplained or held >= stall, seconds=time.time() - t0,
+                        generations=gens, fit_queries=fits.queries,
+                        fit_table={pool[k]: [round(float(x), 3) for x in fits.fit[k]] for k in pool},
+                        leftover=[float(1.0 - x) for x in fb], trail=trail)
 
 
 # ----------------------------------------------------------------------------- display

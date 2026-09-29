@@ -28,7 +28,7 @@ import numpy as np
 
 from breathe.engine import normalize
 
-ARMS = ["one_shot", "think", "fixed", "dropout", "breathe_text", "breathe_attn"]
+ARMS = ["one_shot", "think", "fixed", "dropout", "breathe_text", "breathe_attn", "residue_search"]
 
 # Hand judgement (mine, not the model's): wrong-by-the-answer-key answers that are
 # still defensible because every TRUE clue also fits them.  Reported separately, never
@@ -100,7 +100,7 @@ def main(path, items_path="data/tot_items.jsonl"):
         print(f"{arm:<14} wins {len(wins):>2} {wins}\n{'':<14} loses {len(losses):>2} {losses}")
 
     print("\n=== the distrust flag (corrupt condition) ===")
-    for arm in ("breathe_text", "breathe_attn"):
+    for arm in ("breathe_text", "breathe_attn", "residue_search"):
         if arm not in arms:
             continue
         groups = defaultdict(list)

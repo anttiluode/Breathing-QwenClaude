@@ -36,7 +36,7 @@ import time
 import numpy as np
 
 from analyze import outcome
-from breathe.engine import BreathConfig, breathe, dropout_once, fixed_repeat, normalize
+from breathe.engine import BreathConfig, breathe, dropout_once, fixed_repeat, normalize, residue_search
 
 
 def is_correct(answer: str, aliases: list[str]) -> bool:
@@ -108,7 +108,7 @@ def main():
     if args.limit:
         items = items[: args.limit]
     rng = random.Random(args.seed)
-    arms = ["one_shot"] + (["think"] if args.think else []) + ["fixed", "dropout", "breathe_text", "breathe_attn"]
+    arms = ["one_shot"] + (["think"] if args.think else []) + ["fixed", "dropout", "breathe_text", "breathe_attn", "residue_search"]
     cfg = BreathConfig(beats=args.beats)
     rows = []
     t_start = time.time()
@@ -123,6 +123,8 @@ def main():
                 gens = r.generations
                 res["breathe_text"] = breathe(be, cues, BreathConfig(**{**cfg.__dict__, "use_attention": False}))
                 res["fixed"] = fixed_repeat(be, cues, n_total=gens, temperature=cfg.temp_open, beta=cfg.beta)
+                res["residue_search"] = residue_search(be, cues, n_total=gens, temperature=cfg.temp_open,
+                                                       beta=cfg.beta)
                 rounds = max(1, round(gens / (len(cues) * cfg.per_drop + 1)))
                 res["dropout"] = dropout_once(be, cues, per_drop=cfg.per_drop, temperature=cfg.temp_open,
                                               beta=cfg.beta, rounds=rounds)
@@ -145,7 +147,7 @@ def main():
                            "answer": x.answer, "correct": is_correct(x.answer, item["aliases"]),
                            "trust": x.trust, "distrusted": dis[0] if dis else None,
                            "generations": x.generations, "fit_queries": x.fit_queries,
-                           "beats": len(x.beats), "seconds": round(x.seconds, 2)}
+                           "beats": len(x.beats), "seconds": round(x.seconds, 2), "trail": x.trail}
                     rows.append(row)
                     out.write(json.dumps(row, ensure_ascii=False) + "\n")
                 out.flush()
@@ -185,7 +187,7 @@ def summarize(rows, arms):
         print(f"{arm:<14}{c['clean']:>4}{c['blend']:>6}{c['obeyed']:>6}{c['other']:>6}")
 
     print("\n=== the distrust flag (corrupt condition) ===")
-    for arm in ("breathe_text", "breathe_attn"):
+    for arm in [a for a in ("breathe_text", "breathe_attn", "residue_search") if a in arms]:
         groups = {"named the false clue": [], "named nothing": [], "named a TRUE clue": []}
         for i in ids:
             r = get[(i, "corrupt", arm)]
@@ -222,6 +224,19 @@ def summarize(rows, arms):
                   ("" if base_ok else f"; costs more than 5 points on {base} items") + ".")
         print("-> ATTENTION PRECISION " + ("SURVIVES (beats text deletion)." if v["breathe_text"]
                                           else "NOT SHOWN: no better than deleting cues from the text."))
+        if "residue_search" in arms:
+            # rule for the Sihti-style arm, written before its first run: it must beat dropout
+            # (the run-1 winner) on corrupted clues, and cost <= 5 points on the base condition
+            R = col("corrupt", "residue_search", strict)
+            m1, lo1, hi1 = paired_ci(R, col("corrupt", "dropout", strict))
+            m2, lo2, hi2 = paired_ci(R, col("corrupt", "breathe_attn", strict))
+            m3, _, _ = paired_ci(col(base, "residue_search", strict), col(base, "one_shot", strict))
+            print(f"corrupt: residue_search - dropout      {m1:+.3f}  [{lo1:+.3f}, {hi1:+.3f}]")
+            print(f"corrupt: residue_search - breathe_attn {m2:+.3f}  [{lo2:+.3f}, {hi2:+.3f}]")
+            print(f"{base + ':':<9}residue_search - one_shot   {m3:+.3f}")
+            print("-> RESIDUE SEARCH " + ("SURVIVES: beats dropout on corrupted clues." if lo1 > 0 and m3 >= -0.05
+                                         else "KILLED: does not beat dropout." if lo1 <= 0
+                                         else "KILLED: costs more than 5 points on base items."))
 
 
 if __name__ == "__main__":

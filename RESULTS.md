@@ -116,3 +116,11 @@ can amplify its first mistake, which a one-round method can't.
   best fit, and the checker question was reworded, after the demo showed the checker
   rejecting a true clue for every candidate. The GitHub history can't show that order,
   because the repo was uploaded after the runs. The conversation it was built in can.
+
+## Next: residue_search
+
+Sol pointed out that Sihti's residue is what a purification step *removed*, kept intact.
+My loop's "residue" was a fit deficit used to *suppress* clues. Every loss to dropout above
+comes from that conflation. `residue_search` keeps every clue at full weight and feeds the
+unexplained clues back into the next search. Its kill rule is in the README, written
+before it has run.

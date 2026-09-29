@@ -1,0 +1,8 @@
+torch>=2.2
+transformers>=4.51     # Qwen3 support
+accelerate
+numpy
+# optional, for --load-4bit / --load-8bit on smaller GPUs:
+# bitsandbytes
+# for the tests only:
+# pytest tokenizers
